@@ -30,6 +30,7 @@ from src.monte_carlo import (
     MonteCarloBracketSimulator,
     blend_probabilities,
 )
+from src.exporter import export_predictions
 
 logging.basicConfig(
     level=logging.INFO,
@@ -71,6 +72,7 @@ def run_pipeline(
     n_simulations: int = 50_000,
     mc_blend_weight: float = 0.5,
     random_seed: int = 42,
+    detailed_output_path: str | Path | None = None,
 ) -> pd.DataFrame:
     """Run the full prediction pipeline and write a submission CSV.
 
@@ -79,7 +81,8 @@ def run_pipeline(
     data_dir:
         Directory containing the Kaggle competition data files.
     output_path:
-        Path where the submission CSV will be written.
+        Path where the Kaggle-format submission CSV will be written.
+        Contains columns ``ID`` and ``Pred``.
     season:
         Competition year.
     n_simulations:
@@ -89,11 +92,15 @@ def run_pipeline(
         direct pairwise Elo probabilities.
     random_seed:
         RNG seed for reproducibility.
+    detailed_output_path:
+        Optional path for an enriched results CSV that includes team
+        names, seeds, Elo ratings, and both teams' win probabilities.
+        When ``None`` no detailed file is written.
 
     Returns
     -------
     pd.DataFrame
-        The submission DataFrame (also written to *output_path*).
+        The Kaggle submission DataFrame (also written to *output_path*).
     """
     data_dir = Path(data_dir)
     output_path = Path(output_path)
@@ -223,6 +230,40 @@ def run_pipeline(
     submission_out.to_csv(output_path, index=False)
     log.info("Submission saved to %s (%d rows)", output_path, len(submission_out))
 
+    # ------------------------------------------------------------------
+    # 10. Write detailed results CSV (optional)
+    # ------------------------------------------------------------------
+    if detailed_output_path is not None:
+        # Build a pairwise DataFrame for export (use blended probabilities)
+        pairwise_predictions = pd.DataFrame(
+            [
+                {
+                    "Team1ID": t1,
+                    "Team2ID": t2,
+                    "Team1WinProbability": float(np.clip(
+                        prob_map.get((min(t1, t2), max(t1, t2)), 0.5),
+                        _PROB_CLIP_LOW,
+                        _PROB_CLIP_HIGH,
+                    )),
+                }
+                for _, row in target_season_sub.iterrows()
+                for t1, t2 in [(int(row["Team1ID"]), int(row["Team2ID"]))]
+            ]
+        )
+        export_predictions(
+            predictions=pairwise_predictions,
+            output_path=detailed_output_path,
+            season=season,
+            teams=data["teams"],
+            seed_features=seed_features,
+            elo_ratings=current_elo,
+        )
+        log.info(
+            "Detailed results saved to %s (%d rows)",
+            detailed_output_path,
+            len(pairwise_predictions),
+        )
+
     return submission_out
 
 
@@ -268,6 +309,15 @@ def main(argv: list[str] | None = None) -> None:
         default=42,
         help="Random seed for reproducibility (default: 42).",
     )
+    parser.add_argument(
+        "--detailed-output",
+        default=None,
+        help=(
+            "Optional path for a detailed results CSV that includes team "
+            "names, seeds, Elo ratings, and win probabilities for both teams "
+            "(e.g. results_detailed.csv). When omitted, no detailed file is written."
+        ),
+    )
     args = parser.parse_args(argv)
 
     run_pipeline(
@@ -277,6 +327,7 @@ def main(argv: list[str] | None = None) -> None:
         n_simulations=args.simulations,
         mc_blend_weight=args.mc_weight,
         random_seed=args.seed,
+        detailed_output_path=args.detailed_output,
     )
 
 
